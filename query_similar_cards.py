@@ -2,7 +2,9 @@ import sqlite3
 import numpy as np
 import argparse
 import sys
+from collections import defaultdict
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.cluster import KMeans
 
 DB_FILE = "hearthstone.db"
 
@@ -39,14 +41,11 @@ def load_data_and_embeddings(conn):
     for row in rows:
         card_ids.append(row["card_id"])
         card_names.append(row["name"])
-        # Converte o BLOB de volta para um array numpy
-        # O BERT base tem uma dimensão de 768, e o PyTorch usa float32
         embedding = np.frombuffer(row["row_embedding"], dtype=np.float32)
         if embedding.shape[0] == 768:
             embeddings.append(embedding)
         else:
             print(f"Aviso: Embedding para '{row['name']}' tem formato inesperado {embedding.shape} e será ignorado.", file=sys.stderr)
-
 
     if not embeddings:
         print("Nenhum embedding com formato válido foi carregado.", file=sys.stderr)
@@ -56,52 +55,61 @@ def load_data_and_embeddings(conn):
     return card_names, np.array(embeddings), card_ids
 
 def find_similar_cards(target_card_name, card_names, embeddings, top_k=10):
-    """
-    Encontra as cartas mais similares a uma carta alvo usando similaridade de cosseno.
-    """
+    """Encontra as cartas mais similares a uma carta alvo usando similaridade de cosseno."""
     try:
         target_index = card_names.index(target_card_name)
     except ValueError:
         print(f"Erro: A carta '{target_card_name}' não foi encontrada no banco de dados.", file=sys.stderr)
-        # Tenta encontrar uma correspondência parcial
         matches = [name for name in card_names if target_card_name.lower() in name.lower()]
         if matches:
             print(f"Você quis dizer uma destas? {', '.join(matches[:5])}", file=sys.stderr)
         return None, None
 
     target_embedding = embeddings[target_index].reshape(1, -1)
-
-    # Calcula a similaridade de cosseno entre a carta alvo e todas as outras
     similarities = cosine_similarity(embeddings, target_embedding)
-
-    # Obtém os índices das cartas mais similares, em ordem decrescente
-    # Exclui o primeiro resultado, que é a própria carta
     similar_indices = similarities.flatten().argsort()[-top_k-1:-1][::-1]
-    
     similar_scores = similarities[similar_indices].flatten()
-
     return similar_indices, similar_scores
 
+def cluster_cards_by_mechanics(embeddings, n_clusters=20):
+    """Agrupa cartas por mecânicas similares usando K-Means."""
+    print(f"\nExecutando K-Means para agrupar cartas em {n_clusters} clusters...")
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+    clusters = kmeans.fit_predict(embeddings)
+    print("Clusterização concluída.")
+    return clusters
 
 def main():
-    """
-    Função principal para executar a busca por cartas similares a partir da linha de comando.
-    """
+    """Função principal para executar ações baseadas em embeddings de cartas."""
     parser = argparse.ArgumentParser(
-        description="Encontra cartas de Hearthstone semanticamente similares a uma carta alvo.",
+        description="Execute ações em embeddings de cartas de Hearthstone.",
         formatter_class=argparse.RawTextHelpFormatter
     )
-    parser.add_argument(
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # Subcomando para encontrar cartas similares
+    parser_find = subparsers.add_parser("find", help="Encontra cartas semanticamente similares a uma carta alvo.")
+    parser_find.add_argument(
         "card_name",
         type=str,
-        help="O nome exato da carta para a qual encontrar similares.\nExemplos:\n'Savage Roar'\n'Fireball'"
+        help="O nome exato da carta para a qual encontrar similares. Ex: 'Fireball'"
     )
-    parser.add_argument(
+    parser_find.add_argument(
         "-k", "--top_k",
         type=int,
         default=10,
         help="O número de cartas similares a serem retornadas (padrão: 10)."
     )
+
+    # Subcomando para clusterizar cartas
+    parser_cluster = subparsers.add_parser("cluster", help="Agrupa cartas por mecânicas similares usando K-Means.")
+    parser_cluster.add_argument(
+        "-n", "--n_clusters",
+        type=int,
+        default=20,
+        help="O número de clusters a serem formados (padrão: 20)."
+    )
+
     args = parser.parse_args()
 
     conn = get_db_connection()
@@ -113,19 +121,35 @@ def main():
         if all_card_names is None:
             sys.exit(1)
 
-        similar_indices, similar_scores = find_similar_cards(
-            args.card_name,
-            all_card_names,
-            all_embeddings,
-            args.top_k
-        )
+        if args.command == "find":
+            similar_indices, similar_scores = find_similar_cards(
+                args.card_name,
+                all_card_names,
+                all_embeddings,
+                args.top_k
+            )
+            if similar_indices is not None:
+                print(f"\n--- Cartas mais similares a '{args.card_name}' ---")
+                for i, idx in enumerate(similar_indices):
+                    score = similar_scores[i]
+                    print(f"{i+1:2d}. {all_card_names[idx]} (Similaridade: {score:.4f})")
+                print("----------------------------------------------------")
 
-        if similar_indices is not None:
-            print(f"\n--- Cartas mais similares a '{args.card_name}' ---")
-            for i, idx in enumerate(similar_indices):
-                score = similar_scores[i]
-                print(f"{i+1:2d}. {all_card_names[idx]} (Similaridade: {score:.4f})")
-            print("----------------------------------------------------")
+        elif args.command == "cluster":
+            clusters = cluster_cards_by_mechanics(all_embeddings, args.n_clusters)
+            
+            grouped_cards = defaultdict(list)
+            for card_name, cluster_id in zip(all_card_names, clusters):
+                grouped_cards[cluster_id].append(card_name)
+
+            print("\n--- Grupos de Cartas por Similaridade de Mecânica ---")
+            for cluster_id, cards_in_cluster in sorted(grouped_cards.items()):
+                print(f"\n--- Cluster {cluster_id} ---")
+                # Imprime até 15 cartas por cluster para não poluir a saída
+                print(", ".join(cards_in_cluster[:15]))
+                if len(cards_in_cluster) > 15:
+                    print(f"... e mais {len(cards_in_cluster) - 15} cartas.")
+            print("\n---------------------------------------------------")
 
     finally:
         if conn:

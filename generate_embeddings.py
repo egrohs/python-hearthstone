@@ -1,6 +1,7 @@
 import sqlite3
 import sys
 import json
+import re
 import numpy as np
 from transformers import BertTokenizer, BertModel
 import torch
@@ -47,66 +48,112 @@ def load_bert_model():
         print("Verifique sua conexão com a internet e se as bibliotecas 'torch' e 'transformers' estão instaladas.", file=sys.stderr)
         sys.exit(1)
 
+def augment_description(description, keyword_effects):
+    """Substitui keywords no texto da descrição pelo seu efeito, tratando casos especiais."""
+    if not description:
+        return ""
+
+    def replace_keyword(match):
+        keyword_raw = match.group(1)
+        # Normaliza a keyword para a busca (minúscula, sem ':')
+        keyword_lookup = keyword_raw.replace(":", "").lower()
+        
+        effect = keyword_effects.get(keyword_lookup)
+        
+        # Retorna a keyword original (sem tags) com seu efeito
+        if effect:
+            return f"{keyword_raw} ({effect})"
+        
+        # Se não encontrar efeito, retorna a keyword original sem as tags
+        return keyword_raw
+
+    # Substitui as keywords e remove tags de formatação de valores
+    processed_desc = re.sub(r'<b>(.*?)</b>', replace_keyword, description)
+    processed_desc = processed_desc.replace('<i>', '').replace('</i>', '')
+    return processed_desc
+
 def generate_and_store_embeddings(conn, tokenizer, model):
-    """Gera embeddings para as descrições das cartas e as armazena no banco de dados."""
-    conn.row_factory = sqlite3.Row  # Acessar colunas por nome
+    """Gera e armazena embeddings em lotes para não sobrecarregar a memória."""
+    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
+
+    # Carrega os efeitos das keywords
+    try:
+        cur.execute("SELECT keyword, effect FROM keywords")
+        keyword_effects = {row["keyword"].lower(): row["effect"] for row in cur.fetchall()}
+        print(f"Carregadas {len(keyword_effects)} keywords para aumentar a descrição.")
+    except sqlite3.OperationalError:
+        print("Aviso: Tabela 'keywords' não encontrada. A descrição não será aumentada.", file=sys.stderr)
+        keyword_effects = {}
 
     PROPERTIES_TO_EMBED = [
         "card_id", "dbf_id", "name", "description", "cost", "attack",
         "health", "rarity", "card_set", "card_class", "card_type", "races"
     ]
     select_query = f"SELECT {', '.join(PROPERTIES_TO_EMBED)} FROM cards WHERE row_embedding IS NULL"
-
-    # Seleciona cartas que ainda não têm um embedding
-    cur.execute(select_query)
-    cards_to_process = cur.fetchmany(10)
-
-    if not cards_to_process:
-        print("Nenhuma carta nova para gerar embeddings.")
-        return
-
-    print(f"Encontradas {len(cards_to_process)} cartas para processar.")
-
-    card_ids = [row["card_id"] for row in cards_to_process]
     
-    # Constrói o texto para o embedding em formato JSON
-    texts_to_embed = []
-    for card in cards_to_process:
-        card_dict = {}
-        for prop in PROPERTIES_TO_EMBED:
-            value = card[prop]
-            # Adiciona ao dicionário apenas valores não nulos/vazios
-            if value is not None and str(value).strip() != '':
-                card_dict[prop] = value
-        texts_to_embed.append(json.dumps(card_dict, ensure_ascii=False))
+    total_processed_count = 0
+    batch_size = 100
 
-    print("Tokenizando os textos das cartas...")
-    # Processa em lotes para não sobrecarregar a memória, com max_length maior
-    inputs = tokenizer(texts_to_embed, padding=True, truncation=True, return_tensors="pt", max_length=256)
+    while True:
+        print(f"\nProcessando um novo lote de até {batch_size} cartas...")
+        cur.execute(select_query)
+        cards_to_process = cur.fetchmany(batch_size)
 
-    print("Gerando embeddings (isso pode levar um tempo)...")
-    with torch.no_grad():
-        outputs = model(**inputs)
-        # Usamos o embedding do token [CLS] como a representação da sentença
-        embeddings = outputs.last_hidden_state[:, 0, :].cpu().numpy()
+        if not cards_to_process:
+            print("Nenhuma carta nova para gerar embeddings.")
+            break
 
-    print("Preparando dados para inserção no banco de dados...")
-    update_data = []
-    for i, card_id in enumerate(card_ids):
-        # Converte o array numpy para bytes para armazenamento como BLOB
-        embedding_blob = embeddings[i].tobytes()
-        update_data.append((embedding_blob, card_id))
+        print(f"Encontradas {len(cards_to_process)} cartas para processar neste lote.")
 
-    print("Atualizando o banco de dados...")
-    update_query = "UPDATE cards SET row_embedding = ? WHERE card_id = ?"
-    try:
-        with conn:
-            cur.executemany(update_query, update_data)
-        print(f"Sucesso! {len(update_data)} embeddings foram armazenados no banco de dados.")
-    except sqlite3.Error as e:
-        print(f"Erro ao atualizar o banco de dados: {e}", file=sys.stderr)
-        sys.exit(1)
+        card_ids = [row["card_id"] for row in cards_to_process]
+        
+        texts_to_embed = []
+        for card in cards_to_process:
+            card_dict = {}
+            for prop in PROPERTIES_TO_EMBED:
+                value = card[prop]
+                if prop == 'description' and value:
+                    value = augment_description(value, keyword_effects)
+                if value is not None and str(value).strip() != '':
+                    card_dict[prop] = value
+            
+            json_text = json.dumps(card_dict, ensure_ascii=False)
+            # print(json_text) # Descomente para depurar o texto final
+            texts_to_embed.append(json_text)
+
+        print("Tokenizando os textos das cartas...")
+        inputs = tokenizer(texts_to_embed, padding=True, truncation=True, return_tensors="pt", max_length=512)
+
+        print("Gerando embeddings...")
+        with torch.no_grad():
+            outputs = model(**inputs)
+            embeddings = outputs.last_hidden_state[:, 0, :].cpu().numpy()
+
+        update_data = []
+        for i, card_id in enumerate(card_ids):
+            embedding_blob = embeddings[i].tobytes()
+            update_data.append((embedding_blob, card_id))
+
+        print("Atualizando o banco de dados...")
+        update_query = "UPDATE cards SET row_embedding = ? WHERE card_id = ?"
+        try:
+            with conn:
+                cur.executemany(update_query, update_data)
+            
+            processed_in_batch = len(update_data)
+            total_processed_count += processed_in_batch
+            print(f"Sucesso! {processed_in_batch} embeddings armazenados neste lote.")
+            print(f"Total de cartas processadas até agora: {total_processed_count}")
+
+        except sqlite3.Error as e:
+            print(f"Erro ao atualizar o banco de dados no lote: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    if total_processed_count == 0:
+        print("\nNenhuma carta foi processada na sessão.")
+    else:
+        print(f"\nOperação de embedding concluída. Total de {total_processed_count} cartas foram processadas.")
 
 def main():
     """

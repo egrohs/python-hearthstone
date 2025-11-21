@@ -19,18 +19,18 @@ def get_db_connection():
         sys.exit(1)
 
 def add_embedding_column(conn):
-    """Adiciona a coluna 'description_embedding' à tabela 'cards' se ela não existir."""
+    """Adiciona a coluna 'row_embedding' à tabela 'cards' se ela não existir."""
     cur = conn.cursor()
     cur.execute("PRAGMA table_info(cards)")
     columns = [info[1] for info in cur.fetchall()]
 
-    if "description_embedding" not in columns:
-        print("Adicionando a coluna 'description_embedding' (BLOB) à tabela 'cards'...")
-        cur.execute("ALTER TABLE cards ADD COLUMN description_embedding BLOB;")
+    if "row_embedding" not in columns:
+        print("Adicionando a coluna 'row_embedding' (BLOB) à tabela 'cards'...")
+        cur.execute("ALTER TABLE cards ADD COLUMN row_embedding BLOB;")
         conn.commit()
-        print("Coluna 'description_embedding' adicionada com sucesso.")
+        print("Coluna 'row_embedding' adicionada com sucesso.")
     else:
-        print("A coluna 'description_embedding' já existe.")
+        print("A coluna 'row_embedding' já existe.")
     cur.close()
 
 def load_bert_model():
@@ -48,10 +48,18 @@ def load_bert_model():
 
 def generate_and_store_embeddings(conn, tokenizer, model):
     """Gera embeddings para as descrições das cartas e as armazena no banco de dados."""
+    conn.row_factory = sqlite3.Row  # Acessar colunas por nome
     cur = conn.cursor()
-    # Seleciona cartas que têm uma descrição mas ainda não têm um embedding
-    cur.execute("SELECT card_id, description FROM cards WHERE description IS NOT NULL AND description != '' AND description_embedding IS NULL")
-    cards_to_process = cur.fetchall()
+
+    PROPERTIES_TO_EMBED = [
+        "card_id", "dbf_id", "name", "description", "cost", "attack",
+        "health", "rarity", "card_set", "card_class", "card_type", "races"
+    ]
+    select_query = f"SELECT {', '.join(PROPERTIES_TO_EMBED)} FROM cards WHERE row_embedding IS NULL"
+
+    # Seleciona cartas que ainda não têm um embedding
+    cur.execute(select_query)
+    cards_to_process = cur.fetchmany(10)
 
     if not cards_to_process:
         print("Nenhuma carta nova para gerar embeddings.")
@@ -59,13 +67,21 @@ def generate_and_store_embeddings(conn, tokenizer, model):
 
     print(f"Encontradas {len(cards_to_process)} cartas para processar.")
 
-    # Extrai IDs e descrições
-    card_ids = [row[0] for row in cards_to_process]
-    descriptions = [row[1] for row in cards_to_process]
+    card_ids = [row["card_id"] for row in cards_to_process]
+    
+    # Constrói o texto para o embedding
+    texts_to_embed = []
+    for card in cards_to_process:
+        text_parts = []
+        for prop in PROPERTIES_TO_EMBED:
+            value = card[prop]
+            if value is not None and str(value).strip() != '':
+                text_parts.append(f"{prop}:{value}")
+        texts_to_embed.append(" ".join(text_parts))
 
-    print("Tokenizando as descrições...")
-    # Processa em lotes para não sobrecarregar a memória
-    inputs = tokenizer(descriptions, padding=True, truncation=True, return_tensors="pt", max_length=128)
+    print("Tokenizando os textos das cartas...")
+    # Processa em lotes para não sobrecarregar a memória, com max_length maior
+    inputs = tokenizer(texts_to_embed, padding=True, truncation=True, return_tensors="pt", max_length=256)
 
     print("Gerando embeddings (isso pode levar um tempo)...")
     with torch.no_grad():
@@ -81,7 +97,7 @@ def generate_and_store_embeddings(conn, tokenizer, model):
         update_data.append((embedding_blob, card_id))
 
     print("Atualizando o banco de dados...")
-    update_query = "UPDATE cards SET description_embedding = ? WHERE card_id = ?"
+    update_query = "UPDATE cards SET row_embedding = ? WHERE card_id = ?"
     try:
         with conn:
             cur.executemany(update_query, update_data)

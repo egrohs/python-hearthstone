@@ -1,5 +1,6 @@
 import sqlite3
 import sys
+import json
 import numpy as np
 from transformers import BertTokenizer, BertModel
 import torch
@@ -69,15 +70,16 @@ def generate_and_store_embeddings(conn, tokenizer, model):
 
     card_ids = [row["card_id"] for row in cards_to_process]
     
-    # Constrói o texto para o embedding
+    # Constrói o texto para o embedding em formato JSON
     texts_to_embed = []
     for card in cards_to_process:
-        text_parts = []
+        card_dict = {}
         for prop in PROPERTIES_TO_EMBED:
             value = card[prop]
+            # Adiciona ao dicionário apenas valores não nulos/vazios
             if value is not None and str(value).strip() != '':
-                text_parts.append(f"{prop}:{value}")
-        texts_to_embed.append(" ".join(text_parts))
+                card_dict[prop] = value
+        texts_to_embed.append(json.dumps(card_dict, ensure_ascii=False))
 
     print("Tokenizando os textos das cartas...")
     # Processa em lotes para não sobrecarregar a memória, com max_length maior

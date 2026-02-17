@@ -1,0 +1,10 @@
+calculate_midr_value.py
+generate_embeddings.py
+pyproject.toml
+xml2postgres.py
+xml2sqlite.py
+python_hearthstone.egg-info/PKG-INFO
+python_hearthstone.egg-info/SOURCES.txt
+python_hearthstone.egg-info/dependency_links.txt
+python_hearthstone.egg-info/requires.txt
+python_hearthstone.egg-info/top_level.txt

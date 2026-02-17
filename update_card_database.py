@@ -5,6 +5,19 @@ import sqlite3
 DB_FILE = "hearthstone.db"
 JSON_FILE = "hearthstone_cards.json"
 
+EXCLUDED_SETS = {
+    "HERO_SKINS",
+    # "PLACEHOLDER_202204",
+    "VANILLA",
+    # "REVENDRETH",
+    # "BATTLE_OF_THE_BANDS",
+    # "CORE",
+    # "EXPERT1",
+    # "LEGACY",
+    # "EVENT",
+    # "TB",
+}
+
 def download_card_data():
     """
     Downloads the latest Hearthstone card data from hearthstonejson.com.
@@ -52,30 +65,37 @@ def update_database():
     with open(JSON_FILE, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    cards = data
-    for card in cards:
-        #TODO tirar tb as castas repetidas de outras edições & PLACEHOLDER_202204, VANILLA?, REVENDRETH?, HERO_SKINS, BATTLE_OF_THE_BANDS, CORE, EXPERT1, LEGACY, EVENT
-        # Talvez jogar num set temporário e depois inserir só os únicos por name e/ou text.
-        if card.get("collectible"):
-            races = card.get("races")
-            races_str = ",".join(races) if races else None
-            cursor.execute("""
-            INSERT OR REPLACE INTO cards (id, dbfId, name, cardClass, cost, attack, health, text, rarity, card_set, type, races)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                card.get("id"),
-                card.get("dbfId"),
-                card.get("name"),
-                card.get("cardClass"),
-                card.get("cost"),
-                card.get("attack"),
-                card.get("health"),
-                card.get("text"),
-                card.get("rarity"),
-                card.get("set"),
-                card.get("type"),
-                races_str
-            ))
+    filtered_cards = []
+    for card in data:
+        if card.get("collectible") and card.get("set") not in EXCLUDED_SETS:
+            filtered_cards.append(card)
+
+    unique_cards = {}
+    for card in filtered_cards:
+        key = (card.get("name"), card.get("text"))
+        if key not in unique_cards:
+            unique_cards[key] = card
+
+    for card in unique_cards.values():
+        races = card.get("races")
+        races_str = ",".join(races) if races else None
+        cursor.execute("""
+        INSERT OR REPLACE INTO cards (id, dbfId, name, cardClass, cost, attack, health, text, rarity, card_set, type, races)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            card.get("id"),
+            card.get("dbfId"),
+            card.get("name"),
+            card.get("cardClass"),
+            card.get("cost"),
+            card.get("attack"),
+            card.get("health"),
+            card.get("text"),
+            card.get("rarity"),
+            card.get("set"),
+            card.get("type"),
+            races_str
+        ))
 
     conn.commit()
     conn.close()

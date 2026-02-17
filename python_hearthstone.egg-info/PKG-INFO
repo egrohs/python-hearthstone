@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: python-hearthstone
+Version: 0.1.0
+Summary: Um projeto para processar e gerar embeddings para dados de cartas de Hearthstone.
+Classifier: Programming Language :: Python :: 3
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.8
+Requires-Dist: numpy
+Requires-Dist: transformers[torch]
+Requires-Dist: accelerate
+Requires-Dist: sentencepiece
+Requires-Dist: scikit-learn
+Requires-Dist: pandas
+Provides-Extra: dev
+Requires-Dist: tomlkit; extra == "dev"

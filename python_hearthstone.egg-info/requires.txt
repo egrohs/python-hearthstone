@@ -1,0 +1,9 @@
+numpy
+transformers[torch]
+accelerate
+sentencepiece
+scikit-learn
+pandas
+
+[dev]
+tomlkit

@@ -5,6 +5,8 @@ import re
 import subprocess
 import sys
 import os
+from hearthstone.deckstrings import Deck
+from hearthstone.enums import FormatType
 
 # Configuração inicial da página
 st.set_page_config(page_title="Hearthstone Deckbuilder", layout="wide")
@@ -20,7 +22,14 @@ def load_data():
         # Conecta ao banco e carrega a tabela de cartas 
         # (Ajuste "cards" caso sua tabela tenha outro nome)
         conn = sqlite3.connect('hearthstone.db')
-        query = "SELECT name, cardClass, cost, attack, health, races, rarity, type, card_set, text FROM cards"
+        
+        # Verifica qual o nome correto da coluna de ID dependendo do script de geração usado
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(cards)")
+        cols = [info[1] for info in cur.fetchall()]
+        dbf_col = "dbfId" if "dbfId" in cols else "dbf_id"
+        
+        query = f"SELECT {dbf_col} as dbfId, name, cardClass, cost, attack, health, races, rarity, type, card_set, text FROM cards"
         df = pd.read_sql_query(query, conn)
         conn.close()
         return df
@@ -236,6 +245,7 @@ event_add = st.dataframe(
     on_select="rerun",
     selection_mode="multi-row",
     column_config={
+        "dbfId": None,
         "text": st.column_config.TextColumn(width="large"),
         "cost": st.column_config.NumberColumn("Custo", format="%d"),
         "attack": st.column_config.NumberColumn("Ataque", format="%d"),
@@ -295,6 +305,7 @@ if st.session_state.deck:
             on_select="rerun",
             selection_mode="multi-row",
             column_config={
+                "dbfId": None,
                 "text": st.column_config.TextColumn(width="large"),
                 "QNT": st.column_config.NumberColumn("QNT", width="small"),
                 "cost": st.column_config.NumberColumn("Custo", format="%d"),
@@ -311,6 +322,7 @@ if st.session_state.deck:
             on_select="rerun",
             selection_mode="multi-row",
             column_config={
+                "dbfId": None,
                 "text": st.column_config.TextColumn(width="large"),
                 "QNT": st.column_config.NumberColumn("QNT", width="small"),
                 "cost": st.column_config.NumberColumn("Custo", format="%d"),
@@ -336,5 +348,45 @@ if st.session_state.deck:
             if st.button("Limpar Deck"):
                 st.session_state.deck = []
                 st.rerun()
+                
+    st.markdown("---")
+    st.subheader("Exportar Deck")
+    if st.button("Gerar Deckstring"):
+        HERO_DBF_IDS = {
+            'DEATHKNIGHT': 78065,
+            'DEMONHUNTER': 56550,
+            'DRUID': 274,
+            'HUNTER': 31,
+            'MAGE': 637,
+            'PALADIN': 671,
+            'PRIEST': 813,
+            'ROGUE': 930,
+            'SHAMAN': 1066,
+            'WARLOCK': 893,
+            'WARRIOR': 7,
+            'NEUTRAL': 637 # Mage como fallback
+        }
+        
+        # Identificar classe primária do deck para escolher o herói correspondente
+        classes_in_deck = deck_grouped[deck_grouped['cardClass'].astype(str).str.upper() != 'NEUTRAL']['cardClass']
+        main_class = str(classes_in_deck.mode()[0]).upper() if not classes_in_deck.empty else 'NEUTRAL'
+        
+        # Criar instância do deck
+        deck = Deck()
+        deck.format = FormatType.FT_WILD # FT_WILD permite todas as cartas do formato Livre
+        deck.heroes = [HERO_DBF_IDS.get(main_class, 637)]
+        
+        # Adicionar cartas e suas quantidades
+        cards_to_add = []
+        for _, row in deck_grouped.iterrows():
+            cards_to_add.append((int(row['dbfId']), int(row['QNT'])))
+        deck.cards = cards_to_add
+        
+        try:
+            deckstring = deck.as_deckstring
+            st.success("Deckstring gerada com sucesso! Copie o código abaixo:")
+            st.code(deckstring, language="text")
+        except Exception as e:
+            st.error(f"Erro ao gerar deckstring: {e}")
 else:
     st.info("Seu deck está vazio. Selecione cartas na lista acima e clique em 'Adicionar Cartas Selecionadas'.")

@@ -28,8 +28,9 @@ def load_data():
         cur.execute("PRAGMA table_info(cards)")
         cols = [info[1] for info in cur.fetchall()]
         dbf_col = "dbfId" if "dbfId" in cols else "dbf_id"
+        own_col = "own, " if "own" in cols else "0 as own, "
         
-        query = f"SELECT {dbf_col} as dbfId, name, cardClass, cost, attack, health, races, rarity, type, card_set, text FROM cards"
+        query = f"SELECT {dbf_col} as dbfId, {own_col}name, cardClass, cost, attack, health, races, rarity, type, card_set, text FROM cards"
         df = pd.read_sql_query(query, conn)
         conn.close()
         return df
@@ -246,6 +247,7 @@ event_add = st.dataframe(
     selection_mode="multi-row",
     column_config={
         "dbfId": None,
+            "own": st.column_config.NumberColumn("Possui", format="%d"),
         "text": st.column_config.TextColumn(width="large"),
         "cost": st.column_config.NumberColumn("Custo", format="%d"),
         "attack": st.column_config.NumberColumn("Ataque", format="%d"),
